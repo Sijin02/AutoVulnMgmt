@@ -1,0 +1,64 @@
+version: '3.8'
+services:
+  jenkins:
+    build:
+      context: ./jenkins
+      dockerfile: Dockerfile 
+    image: jenkins-image
+    container_name: jenkins-container-pfs
+    ports:
+      - "8010:8080"
+      - "50000:50000"
+    volumes:
+      - jenkins_home_pfs:/var/jenkins_home
+      - /var/run/docker.sock:/var/run/docker.sock
+    networks:
+      - pfs_network
+
+  zap:
+    image: zaproxy/zap-stable
+    container_name: zap-container-pfs
+    ports:
+      - "8080:8080" 
+    stdin_open: true
+    tty: true        
+    networks:
+      - pfs_network
+
+  openvas:
+    image: mikesplain/openvas
+    container_name: openvas-container-pfs
+    ports:
+      - "400:443"
+    networks:
+      - pfs_network
+
+  dvwa:
+    image: vulnerables/web-dvwa
+    container_name: dvwa-container-pfs
+    ports:
+      - "80:80" 
+      - "443:443"
+    networks:
+      - pfs_network
+
+  ubuntu:
+    build:
+      context: ./ubuntu
+      dockerfile: Dockerfile 
+    image: ubuntu-image
+    container_name: ubuntu-container-pfs
+    ports:
+      - "9010:9010"
+    stdin_open: true 
+    tty: true
+    command: ["sh", "-c", "while :; do sleep 60; done"]
+    networks:
+      - pfs_network
+
+      
+networks:
+  pfs_network:
+volumes:
+  jenkins_home_pfs:
+

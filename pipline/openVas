@@ -1,0 +1,206 @@
+pipeline {
+    agent any
+    
+    triggers {
+        cron('H H */15 * *') // Runs every 15 days
+    }
+    
+    environment {
+        openvasContainer = "openvas-container-pfs"
+        login = "admin"
+        password = "admin"
+        Target_URL = "example.com"
+        Target_id = ""  
+        Task_id = ""   
+        Scan_id = ""    
+        Scan_conf="698f691e-7489-11df-9d8c-002264764cea"
+        DefectDojo_URL = "http://django-defectdojo-nginx-1:8080/api/v2/import-scan/"
+        DefectDojo_Token = "f513f290e351c79aac82f16c6c197e05f79b00d7"
+        Engagement_ID = "3"
+        reportFile = "report_openvas.xml"
+        formatReport="a994b278-1f62-11e1-96ac-406186ea4fc5 "
+    }
+    
+    stages {
+        
+        
+        stage('Start openVas Container') {
+            steps {
+                script {
+                    echo 'Starting openVas container.'
+                    sh '''
+                        # Start the openVas container
+                        docker start openvas-container-pfs || echo "Container not found. Ensure it's created first."
+                        
+                        # Wait for 1 minute to allow the container to initialize
+                        sleep 60
+                    '''
+                    
+                }
+            }
+        }
+        
+        stage('Create or Get Target') {
+            steps {
+                script {
+                
+                    echo "Check if the target already exists"
+                   
+                   def checkExistingTarget = sh(script: """
+                        docker exec ${openvasContainer} omp -u ${login} -w ${password} --get-targets | grep "${Target_URL}" || true
+                    """, returnStdout: true).trim()
+                    
+                    // Step 2: If the target exists, extract the target ID
+                    if (checkExistingTarget) {
+                        // The ID is the first part of the line, so we split the line and take the first part
+                        Target_id = checkExistingTarget.split()[0]  // First element in the split string is the ID
+                        echo "Target already exists. Extracted Target ID: ${Target_id}"
+                    } else {
+                        echo "Target not found. Proceeding with creation."
+                        def output = sh(script: """
+                            docker exec ${openvasContainer} omp -u ${login} -w ${password} --xml='<create_target><name>${Target_URL}</name><hosts>${Target_URL}</hosts></create_target>'
+                        """, returnStdout: true).trim()
+                        
+                        // Extract the 'id' from the XML output using a regular expression
+                        Target_id = output.replaceAll(/.*id="([^"]+)".*/, '$1')
+                        
+                        // Print the extracted id
+                        echo "Target ID: ${Target_id}"
+                        
+                    }
+
+                }
+            }
+        }
+
+        
+        stage('Create a scan task') {
+            steps {
+                script {
+                    def output = sh(script: """
+                        docker exec ${openvasContainer} omp -u ${login} -w ${password} --xml='<create_task><name>Create task for ${Target_URL}</name><target id="${Target_id}"/><config id="${Scan_conf}"/></create_task>'
+                    """, returnStdout: true).trim()
+                    
+                    // Extract the 'id' from the XML output using a regular expression
+                    Task_id = output.replaceAll(/.*id="([^"]+)".*/, '$1')
+                    
+                    // Print the extracted id
+                    echo "Task ID: ${Task_id}"
+                }
+            }
+        }
+        
+        stage('Start a task') {
+            steps {
+                script {
+                    Scan_id = sh(script: """
+                        docker exec ${openvasContainer} omp -u ${login} -w ${password} -S ${Task_id}
+                    """, returnStdout: true).trim()
+                    
+                    // Print the scan ID
+                    echo "Scan ID: ${Scan_id}"
+                }
+            }
+        }
+
+        stage('Monitor Task') {
+            steps {
+                script {
+                    def taskStatus = ""
+                    def maxChecks = 10000 // Set a maximum number of checks
+                    def checkCount = 0
+                    while (checkCount < maxChecks) {
+                        taskStatus = sh(script: """
+                            docker exec ${openvasContainer} omp -u ${login} -w ${password} --get-tasks | grep "${Task_id}"
+                        """, returnStdout: true).trim()
+                        
+                        if (taskStatus) {
+                            echo "${taskStatus}"
+                            def status = taskStatus.split()[1] // Assume "Running" or "Done" will be in the second column
+                            if (status == "Done") {
+                                echo "Task has finished. Exiting monitoring."
+                                break
+                            }
+                        } else {
+                            echo "No task found, exiting monitoring."
+                            break
+                        }
+        
+                        // Sleep for 600 seconds before checking again
+                        echo "Task is still running, checking again in 10 minutes..."
+                        sleep(600)
+                        checkCount++
+                    }
+                    
+                    if (checkCount >= maxChecks) {
+                        echo "Task monitoring timed out. Please check manually."
+                    }
+                }
+            }
+        }
+        
+        // Stage to retrieve the Report ID
+        stage('Retrieve Report ID') {
+            steps {
+                script {
+                    Report_id = sh(script: """
+                        docker exec ${openvasContainer} omp -u ${login} -w ${password} -iX "<get_reports/>" | grep -oP '(?<=<report id=")[^"]*' | head -n 1
+                    """, returnStdout: true).trim()
+                    echo "Retrieved Report ID: ${Report_id}"
+                }
+            }
+        }
+
+        // Stage to retrieve the Report in XML format and save it to a file
+        stage('Retrieve Report in XML format') {
+            steps {
+                script {
+                    sh(script: """
+                        docker exec ${openvasContainer} omp -u ${login} -w ${password} -R ${Report_id} --format ${formatReport} > ${reportFile}
+                    """)
+                    echo "Report saved to ${reportFile}"
+                }
+            }
+        }
+        
+        // Stage to send the report to DefectDojo
+        stage('Send Report to DefectDojo') {
+            steps {
+                script {
+                    echo "Sending report to DefectDojo..."
+                    sh(script: """
+                        curl -X POST ${DefectDojo_URL} \
+                            -H "Authorization: Token ${DefectDojo_Token}" \
+                            -F engagement=${Engagement_ID} \
+                            -F scan_type="OpenVAS Parser" \
+                            -F file=@${reportFile} \
+                            -F active=true \
+                            -F verified=true
+                    """)
+                    echo "Report sent to DefectDojo successfully."
+                }
+            }
+        }
+        
+        stage('Stop opnVas Container') {
+            steps {
+                script {
+                    echo 'Stopping openVas container.'
+        
+                    // Stop the ZAP container
+                    sh '''
+                        docker stop openvas-container-pfs || echo "Failed to stop container. Container may not be running."
+                    '''
+                }
+            }
+        }
+
+    }
+    
+    post {
+        always {
+            echo "Pipeline completed."
+        }
+    }
+    
+}

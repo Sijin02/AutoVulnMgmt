@@ -1,0 +1,180 @@
+pipeline {
+    agent any
+    environment {
+        ZAP_URL = "http://zap:8080"
+        API_KEY = "testSB"
+        TARGET_URL = "https://juice-shop.herokuapp.com/"
+        DEFECTDOJO_URL = "http://django-defectdojo-nginx-1:8080/api/v2/"
+        DEFECTDOJO_API_KEY = "f513f290e351c79aac82f16c6c197e05f79b00d7"
+        ENGAGEMENT_ID = "1"
+        REPORT_FILE = "zap_report.xml"
+        ZAP_COMMAND = "zap.sh -daemon -host 0.0.0.0 -port 8080"
+        TIMEOUT_SECONDS = 120 // Timeout for checking (e.g., 2 minutes)
+        CHECK_INTERVAL = 5    // Interval to wait between checks (5 seconds)
+    }
+    
+    stages {
+    
+    
+            stage('Start ZAP Container and Execute Command') {
+            steps {
+                script {
+                    echo 'Starting ZAP container and executing the ZAP daemon command.'
+                    sh '''
+                        # Start the ZAP container
+                        docker start zap-container || echo "Container not found. Ensure it's created first."
+
+                        # Run zap.sh in the background and redirect both stdout and stderr to a log file
+                        docker exec zap-container sh -c "${ZAP_COMMAND} > /zap/zap_output.log 2>&1 &"
+                    '''
+                }
+            }
+        }
+        stage('Wait for ZAP to Start') {
+            steps {
+                script {
+                    def zapReady = false
+                    def elapsedTime = 0
+
+                    echo 'Waiting for ZAP to start...'
+
+                    while (!zapReady && elapsedTime < env.TIMEOUT_SECONDS.toInteger()) {
+                        sleep(env.CHECK_INTERVAL.toInteger())
+                        elapsedTime += env.CHECK_INTERVAL.toInteger()
+
+                        // Capture the last 50 lines of output from zap_output.log
+                        def zapOutput = sh(script: "docker exec zap-container cat /zap/zap_output.log || true", returnStdout: true).trim()
+
+                        // Show the captured output for debugging
+                        echo "Captured ZAP Output (Last 50 lines):\n${zapOutput}"
+
+                        // Check if the specific ZAP "listening" message is in the output
+                        if (zapOutput.contains("ZAP is now listening on 0.0.0.0:8080")) {
+                            zapReady = true
+                            echo "ZAP is now listening on 0.0.0.0:8080"
+                        } else {
+                            echo "Still waiting for ZAP to start... (${elapsedTime}/${env.TIMEOUT_SECONDS}s)"
+                        }
+                    }
+
+                    if (!zapReady) {
+                        error "ZAP did not start successfully within the timeout period."
+                    }
+                }
+            }
+        }
+
+        stage('Start Spider Scan') {
+            steps {
+                script {
+                    echo "Starting Spider Scan..."
+                    def spiderResponse = sh(script: """
+                        curl "${ZAP_URL}/JSON/spider/action/scan/?url=${TARGET_URL}&apikey=${API_KEY}"
+                    """, returnStdout: true).trim()
+                    echo "Spider scan started: ${spiderResponse}"
+                }
+            }
+        }
+
+
+        stage('Check Spider Scan Status') {
+            steps {
+                script {
+                    echo "Polling for Spider scan status..."
+                    def spiderStatus = 0
+                    while (spiderStatus < 100) {
+                        def response = sh(script: """
+                            curl -s "${ZAP_URL}/JSON/spider/view/status/?apikey=${API_KEY}"
+                        """, returnStdout: true).trim()
+                        spiderStatus = sh(script: """
+                            echo '${response}' | jq -r '.status'
+                        """, returnStdout: true).trim().toInteger()
+                        echo "Spider scan progress: ${spiderStatus}%"
+                        if (spiderStatus < 100) {
+                            sleep(10)
+                        }
+                    }
+                    echo "Spider scan completed."
+                }
+            }
+        }
+        
+        stage('Start Active Scan') {
+            steps {
+                script {
+                    echo "Starting Active Scan..."
+                    def ascanResponse = sh(script: """
+                        curl -s "${ZAP_URL}/JSON/ascan/action/scan/?url=${TARGET_URL}&apikey=${API_KEY}"
+                    """, returnStdout: true).trim()
+                    echo "Active scan started: ${ascanResponse}"
+                }
+            }
+        }
+        
+        stage('Wait for Active Scan to Finish') {
+            steps {
+                script {
+                    echo "Polling for Active scan status..."
+                    def ascanStatus = 0
+                    while (ascanStatus < 100) {
+                        def response = sh(script: """
+                            curl -s "${ZAP_URL}/JSON/ascan/view/status/?apikey=${API_KEY}"
+                        """, returnStdout: true).trim()
+                        ascanStatus = sh(script: """
+                            echo '${response}' | jq -r '.status'
+                        """, returnStdout: true).trim().toInteger()
+                        echo "Active scan progress: ${ascanStatus}%"
+                        if (ascanStatus < 100) {
+                            sleep(10)
+                        }
+                    }
+                    echo "Active scan completed."
+                }
+            }
+        }
+        
+        stage('Get Alerts') {
+            steps {
+                script {
+                    echo "Retrieving alerts..."
+                    sh """
+                        curl -s "${ZAP_URL}/OTHER/core/other/xmlreport/?apikey=${API_KEY}" -o ${REPORT_FILE}
+                    """
+                    echo "Alerts saved to ${REPORT_FILE}"
+                }
+            }
+        }
+        
+        stage('Upload Report to DefectDojo') {
+            steps {
+                script {
+                    echo "Uploading ZAP report to DefectDojo..."
+                    def uploadResponse = sh(script: """
+                        curl -X POST ${DEFECTDOJO_URL}import-scan/ -H "Authorization: Token ${DEFECTDOJO_API_KEY}" -F engagement=${ENGAGEMENT_ID} -F scan_type="ZAP Scan" -F file=@${REPORT_FILE} -F active=true -F verified=true
+                    """, returnStdout: true).trim()
+                    echo "Upload response: ${uploadResponse}"
+                }
+            }
+        }
+        
+        stage('Stop ZAP Container') {
+            steps {
+                script {
+                    echo 'Stopping ZAP container.'
+        
+                    // Stop the ZAP container
+                    sh '''
+                        docker stop zap-container || echo "Failed to stop container. Container may not be running."
+                    '''
+                }
+            }
+        }
+    }
+    
+    post {
+        always {
+            echo "Pipeline completed."
+            archiveArtifacts artifacts: '${REPORT_FILE}', allowEmptyArchive: true
+        }
+    }
+}

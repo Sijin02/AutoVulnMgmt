@@ -1,0 +1,90 @@
+pipeline {
+    agent any
+    environment {
+        DOCKER_HOST = "unix:///var/run/docker.sock" // Docker socket for controlling Docker from Jenkins
+        nmapContainerName = "ubuntu-container-pfs" // Name of the Nmap container
+        outputDir = "/tmp" // Directory inside the container for output
+        TARGET_URL = "https://juice-shop.herokuapp.com/" // Hardcoded target URL for Nmap scan
+    }
+    stages {
+        stage('Check and Start Container') {
+            steps {
+                script {
+                    // Check if the Nmap container is running
+                    def containerStatus = sh(script: "docker ps --filter name=${nmapContainerName} --filter status=running -q", returnStdout: true).trim()
+
+                    if (!containerStatus) {
+                        // Check if the container exists but is stopped
+                        def stoppedContainer = sh(script: "docker ps -a --filter name=${nmapContainerName} --filter status=exited -q", returnStdout: true).trim()
+
+                        if (stoppedContainer) {
+                            echo "Starting stopped container ${nmapContainerName}..."
+                            sh "docker start ${nmapContainerName}"
+                        } else {
+                            // Start a new container
+                            echo "Starting a new container ${nmapContainerName}..."
+                            sh "docker run -d --name ${nmapContainerName} ubuntu sleep infinity"
+                        }
+                    }
+                }
+            }
+        }
+
+        stage('Run Nmap') {
+            steps {
+                script {
+                    def targetUrl = env.TARGET_URL // Use the hardcoded target URL
+                    def reportNumber = currentBuild.number
+                    def reportName = "nmap-report-${reportNumber}.xml"
+                    def nmapCommand = "nmap --script=vuln -oX ${outputDir}/${reportName}  ${targetUrl} -vv" // Nmap command to output XML
+
+                    // Run the Nmap scan inside the container with the dynamic report name
+                    sh """
+                        docker exec ${nmapContainerName} ${nmapCommand}
+                    """
+                    // Set the report name for the next stage
+                    env.reportName = reportName
+                }
+            }
+        }
+
+        stage('Copy Nmap Report to Jenkins') {
+            steps {
+                script {
+                    // Ensure the file exists inside the container
+                    sh "docker exec ${nmapContainerName} ls ${outputDir}/${env.reportName}"
+
+                    // Copy the dynamically named Nmap report from the source container to the Jenkins host
+                    sh "docker cp ${nmapContainerName}:${outputDir}/${env.reportName} /tmp/${env.reportName}"
+                }
+            }
+        }
+
+        stage('Send Nmap Report to DefectDojo') {
+            steps {
+                script {
+                    // Send the dynamically named Nmap report to DefectDojo
+                    sh """
+                        curl -X POST -H "Authorization: Token a98bba7f5520c2124e2138d3c4c7eb6ee6d5f415" \
+                             -F file=@/tmp/${env.reportName} \
+                             -F scan_type="Nmap Scan" \
+                             -F engagement=1 \
+                             http://172.26.48.1:8080/api/v2/import-scan/
+                    """
+                }
+            }
+        }
+
+        stage('Stop Container') {
+            steps {
+                script {
+                    // Stop and clean up the container
+                    echo "Stopping the container ${nmapContainerName}..."
+                    sh """
+                        docker stop ${nmapContainerName}
+                    """
+                }
+            }
+        }
+    }
+}

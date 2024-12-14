@@ -1,0 +1,89 @@
+pipeline {
+    agent any
+    environment {
+        DOCKER_HOST = "unix:///var/run/docker.sock"
+        wapitiContainerName = "ubuntu-container-pfs"
+        outputDir = "/tmp"
+        TARGET_URL = "https://juice-shop.herokuapp.com/" // Hardcoded target URL
+    }
+    stages {
+        stage('Check and Start Container') {
+            steps {
+                script {
+                    // Check if the container is running
+                    def containerStatus = sh(script: "docker ps --filter name=${wapitiContainerName} --filter status=running -q", returnStdout: true).trim()
+
+                    if (!containerStatus) {
+                        // Check if the container exists but is stopped
+                        def stoppedContainer = sh(script: "docker ps -a --filter name=${wapitiContainerName} --filter status=exited -q", returnStdout: true).trim()
+
+                        if (stoppedContainer) {
+                            echo "Starting stopped container ${wapitiContainerName}..."
+                            sh "docker start ${wapitiContainerName}"
+                        } else {
+                            // Start a new container
+                            echo "Starting a new container ${wapitiContainerName}..."
+                            sh "docker run -d --name ${wapitiContainerName} ubuntu sleep infinity"
+                        }
+                    }
+                }
+            }
+        }
+
+        stage('Run Wapiti') {
+            steps {
+                script {
+                    def targetUrl = env.TARGET_URL
+                    def reportNumber = currentBuild.number
+                    def reportName = "wapiti-report-${reportNumber}.xml"
+                    def wapitiCommand = "/usr/bin/wapiti -u '${targetUrl}' -o ${outputDir}/${reportName} -f xml"
+
+                    // Run the Wapiti scan inside the container
+                    sh """
+                        docker exec ${wapitiContainerName} bin/bash -c "${wapitiCommand}"
+                    """
+                    env.reportName = reportName
+                }
+            }
+        }
+
+        stage('Copy Wapiti Report to Jenkins') {
+            steps {
+                script {
+                    // Ensure the file exists inside the container
+                    sh "docker exec ${wapitiContainerName} ls /tmp/${env.reportName}"
+
+                    // Copy the report to the Jenkins workspace
+                    sh "docker cp ${wapitiContainerName}:/tmp/${env.reportName} /tmp/${env.reportName}"
+                }
+            }
+        }
+
+        stage('Send Wapiti Report to DefectDojo') {
+            steps {
+                script {
+                    // Send the report to DefectDojo
+                    sh """
+                        curl -X POST -H "Authorization: Token a98bba7f5520c2124e2138d3c4c7eb6ee6d5f415" \
+                             -F file=@/tmp/${env.reportName} \
+                             -F scan_type="Wapiti Scan" \
+                             -F engagement=1 \
+                             http://100.94.241.51:8080/api/v2/import-scan/
+                    """
+                }
+            }
+        }
+
+        stage('Stop Container') {
+            steps {
+                script {
+                    // Stop and clean up the container
+                    echo "Stopping the container ${wapitiContainerName}..."
+                    sh """
+                        docker stop ${wapitiContainerName}
+                    """
+                }
+            }
+        }
+    }
+}

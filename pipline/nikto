@@ -1,0 +1,103 @@
+pipeline {
+    agent any
+    environment {
+        DOCKER_HOST = "unix:///var/run/docker.sock" // Docker socket for controlling Docker from Jenkins
+        niktoContainerName = "ubuntu-container-pfs" // Name of the Nikto container
+        outputDir = "/tmp" // Directory inside the container for output
+        TARGET_URL = "https://juice-shop.herokuapp.com/" // Hardcoded target URL for Nikto scan
+    }
+    stages {
+        stage('Check and Start Container') {
+            steps {
+                script {
+                    // Check if the Nikto container is running
+                    def containerStatus = sh(script: "docker ps --filter name=${niktoContainerName} --filter status=running -q", returnStdout: true).trim()
+
+                    if (!containerStatus) {
+                        // Check if the container exists but is stopped
+                        def stoppedContainer = sh(script: "docker ps -a --filter name=${niktoContainerName} --filter status=exited -q", returnStdout: true).trim()
+
+                        if (stoppedContainer) {
+                            echo "Starting stopped container ${niktoContainerName}..."
+                            sh "docker start ${niktoContainerName}"
+                        } else {
+                            // Start a new container
+                            echo "Starting a new container ${niktoContainerName}..."
+                            sh "docker run -d --name ${niktoContainerName} ubuntu sleep infinity"
+                        }
+                    }
+                }
+            }
+        }
+
+        stage('Run Nikto') {
+            steps {
+                script {
+                    def targetUrl = env.TARGET_URL // Use the hardcoded target URL
+                    def reportNumber = currentBuild.number
+                    def reportName = "nikto-report-${reportNumber}.xml"
+                    def niktoCommand = "nikto -h ${targetUrl} -o ${outputDir}/${reportName} -Format xml" // Nikto command to output XML
+
+                    // Run the Nikto scan inside the container with the dynamic report name
+                    def containerStatus = sh(script: "docker ps --filter name=${niktoContainerName} --filter status=running -q", returnStdout: true).trim()
+
+                    if (containerStatus) {
+                        sh """
+                            docker exec ${niktoContainerName} ${niktoCommand}
+                        """
+                    } else {
+                        error "Container ${niktoContainerName} is not running!"
+                    }
+
+                    // Set the report name for the next stage
+                    env.reportName = reportName
+                }
+            }
+        }
+
+        stage('Copy Nikto Report to Jenkins') {
+            steps {
+                script {
+                    // Copy the dynamically named Nikto report from the source container to the Jenkins host
+                    sh """
+                        docker cp ${niktoContainerName}:/tmp/${env.reportName} /tmp/${env.reportName}
+                    """
+                }
+            }
+        }
+
+        stage('Send Nikto Report to DefectDojo') {
+            steps {
+                script {
+                    // Send the dynamically named Nikto report to DefectDojo
+                    sh """
+                        curl -X POST -H "Authorization: Token a98bba7f5520c2124e2138d3c4c7eb6ee6d5f415" \
+                             -F file=@/tmp/${env.reportName} \
+                             -F scan_type="Nikto Scan" \
+                             -F engagement=1 \
+                             http://172.26.48.1:8080/api/v2/import-scan/
+                    """
+                }
+            }
+        }
+
+        stage('Stop Container') {
+            steps {
+                script {
+                    // Stop the Nikto container if it's running
+                    def containerStatus = sh(script: "docker ps --filter name=${niktoContainerName} --filter status=running -q", returnStdout: true).trim()
+
+                    if (containerStatus) {
+                        echo "Stopping the container ${niktoContainerName}..."
+                        sh """
+                            docker stop ${niktoContainerName}
+                        """
+                    } else {
+                        echo "Container ${niktoContainerName} is already stopped."
+                    }
+                }
+            }
+        }
+    }
+}
+
