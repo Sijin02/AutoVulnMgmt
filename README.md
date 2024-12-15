@@ -24,42 +24,42 @@ Before running the project, ensure the following are installed on your system:
 Follow these steps to get the project up and running:
 
 
-**Clone the Repository**:
-   https://github.com/Sijin02/AutoVulnMgmt.git
+**Clone the Repository**:<br>
+   https://github.com/Sijin02/AutoVulnMgmt.git<br>
    cd AutoVulnMgmt
    
-**Build and Start the Containers: Use Docker Compose to build and start the containers:**
+**Build and Start the Containers: Use Docker Compose to build and start the containers:**<br>
 docker-compose up --build
 
-**Run Pre-Pipeline Setup on Jenkins Container:**
+**Run Pre-Pipeline Setup on Jenkins Container:**<br>
 Before running any pipeline, ensure Jenkins has the correct Docker permissions by running the following commands inside the Jenkins container:
 
-docker exec -u root -it jenkins-container /bin/sh
-chown root:docker /var/run/docker.sock
-chmod 660 /var/run/docker.sock
-usermod -aG docker jenkins
-exit
+docker exec -u root -it jenkins-container /bin/sh<br>
+chown root:docker /var/run/docker.sock<br>
+chmod 660 /var/run/docker.sock<br>
+usermod -aG docker jenkins<br>
+exit<br>
 
 
-**Run DefectDojo as a Separate Container:**
+**Run DefectDojo as a Separate Container:**<br>
 Pull the DefectDojo image and run it separately. You will then add it to the same Docker network as Jenkins and the other tools.
 
-docker pull defectdojo/defectdojo
-docker run -d --name defectdojo-container --network pfs_network -p 5000:5000 defectdojo/defectdojo
+docker pull defectdojo/defectdojo<br>
+docker run -d --name defectdojo-container --network pfs_network -p 5000:5000 defectdojo/defectdojo<br>
 
 **Access the Services:**
-Jenkins: http://localhost:8010
-ZAP: http://localhost:8080
-DVWA: http://localhost
-OpenVAS: https://localhost:400
-DefectDojo: http://localhost:5000
+Jenkins: http://localhost:8010<br>
+ZAP: http://localhost:8080<br>
+DVWA: http://localhost<br>
+OpenVAS: https://localhost:400<br>
+DefectDojo: http://localhost:5000<br>
 
 
-Run a Security Pipeline in Jenkins:
-Create a Jenkins pipeline that targets a URL (e.g., DVWA or any other web application).
-The pipeline will automatically run security tools such as ZAP, OpenVAS, and Nikto and send results to DefectDojo for vulnerability tracking.
+Run a Security Pipeline in Jenkins:<br>
+Create a Jenkins pipeline that targets a URL (e.g., DVWA or any other web application).<br>
+The pipeline will automatically run security tools such as ZAP, OpenVAS, and Nikto and send results to DefectDojo for vulnerability tracking.<br>
 
-Stop the Environment: To stop and remove the containers, run:
-docker-compose down
-docker stop defectdojo-container
-docker rm defectdojo-container
+Stop the Environment: To stop and remove the containers, run:<br>
+docker-compose down<br>
+docker stop defectdojo-container<br>
+docker rm defectdojo-container<br>
