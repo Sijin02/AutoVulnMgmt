@@ -99,5 +99,23 @@ pipeline {
             }
         }
     }
+
+    post {
+        success {
+            echo "Pipeline completed successfully."
+            mail to: 'noussaibanas@gmail.com',
+                 subject: "Pipeline Success: ${env.JOB_NAME} #${env.BUILD_NUMBER}",
+                 body: "The pipeline completed successfully. Check the details at ${env.BUILD_URL}"
+        }
+        failure {
+            echo "Pipeline failed."
+            mail to: 'noussaibanas@gmail.com',
+                 subject: "Pipeline Failure: ${env.JOB_NAME} #${env.BUILD_NUMBER}",
+                 body: "The pipeline failed. Check the details at ${env.BUILD_URL}"
+        }
+        always {
+            echo "Pipeline execution finished."
+        }
+    }
 }
 
